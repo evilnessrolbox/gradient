@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html {
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;     /* scrolls if the pillar is taller than the block */
+    background: transparent;
+    font-family: Arial, sans-serif;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100%;
+    box-sizing: border-box;
+    padding: 12px 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    /* square size is set by the script, based on how many squares there are */
+    --s: 40px;
+  }
+
+  #pillar { display: flex; flex-direction: column; }
+
+  .sq {
+    width: var(--s);
+    height: var(--s);
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+  .sq:hover { outline: 3px solid #222; outline-offset: -3px; }
+
+  /* Square count buttons in the top-right corner */
+  #counts {
+    position: fixed;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+    z-index: 5;
+  }
+  .cnt {
+    min-width: 34px;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 0;
+    background: #ececec;
+    color: #222;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .cnt:hover { background: #dcdcdc; }
+  .cnt.active { background: #222; color: #fff; }
+
+  #choosers { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+
+  .chooser {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    color: #222;
+  }
+
+  /* Color picker: no border */
+  input[type="color"] {
+    width: 40px;
+    height: 32px;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+    cursor: pointer;
+  }
+  input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+  input[type="color"]::-webkit-color-swatch { border: none; border-radius: 0; }
+  input[type="color"]::-moz-color-swatch { border: none; border-radius: 0; }
+
+  /* HEX box: no border, soft gray background instead */
+  input[type="text"] {
+    width: 74px;
+    padding: 7px 5px;
+    border: none;
+    outline: none;
+    border-radius: 0;
+    background: #ececec;
+    color: #222;
+    font-family: monospace;
+    font-size: 13px;
+    text-transform: uppercase;
+  }
+  input[type="text"]:focus { background: #e0e0e0; }
+  input[type="text"].bad { background: #ffd6d6; } /* invalid code */
+
+  #btn {
+    padding: 10px 24px;
+    border: 2px solid #222;
+    border-radius: 0;
+    background: #fff;
+    color: #222;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  #btn:hover { background: #eee; }
+
+  #msg {
+    height: 20px;
+    font-size: 14px;
+    color: #222;
+    font-family: monospace;
+  }
+</style>
+</head>
+<body>
+  <div id="counts">
+    <button class="cnt" data-n="5">5</button>
+    <button class="cnt active" data-n="10">10</button>
+    <button class="cnt" data-n="25">25</button>
+  </div>
+
+  <div id="pillar"></div>
+
+  <div id="choosers">
+    <div class="chooser">
+      Top
+      <input type="color" id="pickA" value="#ff0000">
+      <input type="text" id="hexA" value="#FF0000" maxlength="7">
+    </div>
+    <div class="chooser">
+      Bottom
+      <input type="color" id="pickB" value="#0000ff">
+      <input type="text" id="hexB" value="#0000FF" maxlength="7">
+    </div>
+  </div>
+
+  <button id="btn">Random Colors</button>
+  <div id="msg">Click a square to copy its HEX code</div>
+
+  <script>
+    // Minimum square size in pixels for each count (0 = just fit the block).
+    // Raise the 25 value to make that pillar even bigger.
+    var MIN_SIZE = { 5: 0, 10: 0, 25: 26 };
+
+    var COUNT = 10; // number of squares (changed by the 5 / 10 / 25 buttons)
+    var pillar = document.getElementById("pillar");
+    var msg = document.getElementById("msg");
+    var pickA = document.getElementById("pickA");
+    var pickB = document.getElementById("pickB");
+    var hexA = document.getElementById("hexA");
+    var hexB = document.getElementById("hexB");
+    var countButtons = document.querySelectorAll(".cnt");
+    var squares = [];
+    var hexes = [];
+
+    // ---------- color helpers ----------
+    function isHex(s) { return /^#?[0-9a-f]{6}$/i.test(s); }
+
+    function normalize(s) {
+      s = s.trim();
+      if (s.charAt(0) !== "#") s = "#" + s;
+      return s.toUpperCase();
+    }
+
+    function toRgb(hex) {
+      return [
+        parseInt(hex.substr(1, 2), 16),
+        parseInt(hex.substr(3, 2), 16),
+        parseInt(hex.substr(5, 2), 16)
+      ];
+    }
+
+    function toHex(rgb) {
+      var out = "#";
+      for (var i = 0; i < 3; i++) {
+        out += Math.round(rgb[i]).toString(16).padStart(2, "0");
+      }
+      return out.toUpperCase();
+    }
+
+    // blend from color a to color b; t goes from 0 (all a) to 1 (all b)
+    function mix(a, b, t) {
+      var ra = toRgb(a), rb = toRgb(b);
+      return toHex([
+        ra[0] + (rb[0] - ra[0]) * t,
+        ra[1] + (rb[1] - ra[1]) * t,
+        ra[2] + (rb[2] - ra[2]) * t
+      ]);
+    }
+
+    function hslToHex(h, s, l) {
+      s /= 100; l /= 100;
+      var k = function (n) { return (n + h / 30) % 12; };
+      var a = s * Math.min(l, 1 - l);
+      var f = function (n) {
+        var v = l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+        return Math.round(255 * v).toString(16).padStart(2, "0");
+      };
+      return ("#" + f(0) + f(8) + f(4)).toUpperCase();
+    }
+
+    function rand(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }
+
+    // ---------- copy to clipboard ----------
+    function copyText(text, done) {
+      function fallback() {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand("copy"); } catch (e) {}
+        ta.remove();
+        done(ok);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+      } else {
+        fallback();
+      }
+    }
+
+    var msgTimer;
+    function showMessage(text) {
+      msg.textContent = text;
+      clearTimeout(msgTimer);
+      msgTimer = setTimeout(function () {
+        msg.textContent = "Click a square to copy its HEX code";
+      }, 2500);
+    }
+
+    // paint the pillar: the top square is the top color, the bottom one is the bottom color
+    function paint() {
+      var a = normalize(hexA.value);
+      var b = normalize(hexB.value);
+      for (var i = 0; i < COUNT; i++) {
+        hexes[i] = mix(a, b, COUNT === 1 ? 0 : i / (COUNT - 1));
+        squares[i].style.backgroundColor = hexes[i];
+      }
+    }
+
+    // ---------- build the pillar with n squares ----------
+    function build(n) {
+      COUNT = n;
+      pillar.innerHTML = "";
+      squares = [];
+      hexes = [];
+
+      // each square fits the block, but never gets smaller than its minimum size
+      var fit = "min(calc((100vh - 170px) / " + n + "), 80vw)";
+      var min = MIN_SIZE[n] || 0;
+      document.body.style.setProperty(
+        "--s", min > 0 ? "max(" + min + "px, " + fit + ")" : fit
+      );
+
+      for (var i = 0; i < n; i++) {
+        (function (index) {
+          var sq = document.createElement("div");
+          sq.className = "sq";
+          sq.addEventListener("click", function () {
+            var hex = hexes[index];
+            copyText(hex, function (ok) {
+              showMessage(ok ? "Copied " + hex : "Copy blocked, the code is " + hex);
+            });
+          });
+          pillar.appendChild(sq);
+          squares.push(sq);
+        })(i);
+      }
+
+      // highlight the active count button
+      for (var j = 0; j < countButtons.length; j++) {
+        var active = parseInt(countButtons[j].getAttribute("data-n")) === n;
+        countButtons[j].classList.toggle("active", active);
+      }
+
+      paint();
+    }
+
+    // the 5 / 10 / 25 buttons
+    for (var c = 0; c < countButtons.length; c++) {
+      countButtons[c].addEventListener("click", function () {
+        build(parseInt(this.getAttribute("data-n")));
+      });
+    }
+
+    // ---------- color choosers (picker + HEX box stay in sync) ----------
+    function link(picker, box) {
+      picker.addEventListener("input", function () {
+        box.value = picker.value.toUpperCase();
+        box.classList.remove("bad");
+        paint();
+      });
+      box.addEventListener("input", function () {
+        if (isHex(box.value)) {
+          box.classList.remove("bad");
+          picker.value = normalize(box.value).toLowerCase();
+          paint();
+        } else {
+          box.classList.add("bad");
+        }
+      });
+    }
+    link(pickA, hexA);
+    link(pickB, hexB);
+
+    function setColors(a, b) {
+      hexA.value = a; pickA.value = a.toLowerCase();
+      hexB.value = b; pickB.value = b.toLowerCase();
+      hexA.classList.remove("bad");
+      hexB.classList.remove("bad");
+      paint();
+    }
+
+    // random pair of colors with clearly different hues
+    document.getElementById("btn").addEventListener("click", function () {
+      var h = rand(0, 360);
+      var h2 = (h + rand(90, 270)) % 360;
+      setColors(hslToHex(h, rand(70, 95), rand(40, 60)), hslToHex(h2, rand(70, 95), rand(40, 60)));
+    });
+
+    build(10); // starts with 10 squares, red to blue
+  </script>
+</body>
+</html>
